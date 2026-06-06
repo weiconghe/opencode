@@ -119,8 +119,23 @@ function parts(node: Node) {
   return out
 }
 
-function source(node: Node) {
-  return (node.parent?.type === "redirected_statement" ? node.parent.text : node.text).trim()
+function source(node: Node, ps: boolean) {
+  const target = node.parent?.type === "redirected_statement" ? node.parent : node
+  const text = target.text
+  let offset = 0
+  for (let i = 0; i < target.childCount; i++) {
+    const child = target.child(i)
+    if (!child || child.type !== "variable_assignment") break
+    // Never strip an assignment whose value carries shell-evaluated content
+    // (command substitution, ${var@P} prompt expansion, backticks, etc.).
+    // Otherwise an allowlisted command like `echo *` would auto-approve a
+    // command that hides execution behind an env prefix — e.g.
+    // `EVIL='$(touch /tmp/pwn)' FOO=${EVIL@P} echo hello` — because the
+    // prefix is stripped and permission matching only sees `echo hello`.
+    if (dynamic(child.text, ps)) break
+    offset = child.endIndex - target.startIndex
+  }
+  return offset > 0 ? text.slice(offset).trim() : text.trim()
 }
 
 function commands(node: Node) {
@@ -414,7 +429,7 @@ export const ShellTool = Tool.define(
         }
 
         if (tokens.length && (!cmd || !CWD.has(cmd))) {
-          scan.patterns.add(source(node))
+          scan.patterns.add(source(node, ps))
           scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
         }
       }

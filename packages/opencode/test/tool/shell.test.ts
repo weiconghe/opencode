@@ -239,6 +239,117 @@ describe("tool.shell permissions", () => {
     }),
   )
 
+  for (const item of shells.filter((s) => !PS.has(s.label))) {
+    it.live(`strips env variable prefixes from permission pattern [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            yield* run(
+              {
+                command: "NODE_ENV=production echo hello",
+                description: "Echo with env var",
+              },
+              capture(requests),
+            )
+            expect(requests.length).toBe(1)
+            expect(requests[0].permission).toBe("bash")
+            expect(requests[0].patterns).toContain("echo hello")
+            expect(requests[0].patterns).not.toContain("NODE_ENV=production echo hello")
+            expect(requests[0].always).toContain("echo *")
+          }),
+        ),
+      ),
+    )
+  }
+
+  for (const item of shells.filter((s) => !PS.has(s.label))) {
+    it.live(`strips multiple env variable prefixes from permission pattern [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            yield* run(
+              {
+                command: "NODE_ENV=production DEBUG=1 go test ./...",
+                description: "Go test with env vars",
+              },
+              capture(requests),
+            )
+            expect(requests.length).toBe(1)
+            expect(requests[0].permission).toBe("bash")
+            expect(requests[0].patterns).toContain("go test ./...")
+            expect(requests[0].patterns).not.toContain("NODE_ENV=production DEBUG=1 go test ./...")
+            expect(requests[0].always).toContain("go test *")
+          }),
+        ),
+      ),
+    )
+  }
+
+  for (const item of shells.filter((s) => !PS.has(s.label))) {
+    it.live(`keeps dynamic env prefixes in permission pattern [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            // An env value that carries shell expansion must not be stripped,
+            // or an allowlist like `echo *` would hide what the prefix does.
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            yield* run(
+              {
+                command: "FOO=${BAR} echo hello",
+                description: "Echo with dynamic env var",
+              },
+              capture(requests),
+            )
+            expect(requests.length).toBe(1)
+            expect(requests[0].permission).toBe("bash")
+            expect(requests[0].patterns).toContain("FOO=${BAR} echo hello")
+            expect(requests[0].patterns).not.toContain("echo hello")
+          }),
+        ),
+      ),
+    )
+  }
+
+  for (const item of shells.filter((s) => !PS.has(s.label))) {
+    it.live(`keeps \${var@P} prompt-expansion prefix in permission pattern [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            // ${var@P} runs Bash prompt expansion on the variable's value, so
+            // it executes any command substitution embedded in it. Stripping
+            // the prefix would let `echo *` auto-approve the smuggled run.
+            // Stop after capture so the hidden $(...) never executes.
+            const err = new Error("stop after permission")
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            expect(
+              yield* fail(
+                {
+                  command: "EVIL='$(echo pwned)' FOO=${EVIL@P} echo hello",
+                  description: "Echo with prompt-expansion env var",
+                },
+                capture(requests, err),
+              ),
+            ).toMatchObject({ message: err.message })
+            expect(requests.length).toBe(1)
+            expect(requests[0].permission).toBe("bash")
+            expect(requests[0].patterns).toContain("EVIL='$(echo pwned)' FOO=${EVIL@P} echo hello")
+            expect(requests[0].patterns).not.toContain("echo hello")
+          }),
+        ),
+      ),
+    )
+  }
+
   each("asks for bash permission with multiple commands", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped()
